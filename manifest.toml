@@ -1,0 +1,128 @@
+schema_version = 1
+plugin_name = "geo"
+
+[image]
+reference = "localhost/autonomics/biotools-py@sha256:21e14c1582a9d4c261c0a23a11864293313ee2b49b9b7d85bcabc89210b48c7e"
+tag = "v1"
+upstream = "NCBI GEO FTP mirror over HTTPS (ftp.ncbi.nlm.nih.gov)"
+license = "CC0-1.0 (GEO data)"
+
+# 说明：GEO/SRA 元数据下载家族。全部为零输入源节点（inputs = []），
+# 输出文件名固定，供 DAG 下游直接引用。原始 FASTQ 下载不在本家族范围
+# （需 sra-tools，体积与时长都不适合默认容器超时）；run-level 元数据
+# 与供者/run 映射由 sra_runinfo 覆盖，满足供者身份核验需求。
+
+[[nodes]]
+kind = "geo_series_matrix"
+desc = "Download GEO series matrix (expression matrix + sample metadata) for a GSE accession"
+doc = """
+按 GSE accession 从 NCBI 官方 HTTPS 镜像下载 series_matrix.txt.gz。
+输出：series_matrix.txt.gz（原始字节，未解压）+ geo_fetch.log
+（URL、HTTP 状态、字节数、下载文件的 sha256 —— 自带内容锚，可直接进运行账本）。
+输入构念：处理后的表达矩阵 + 样本表（如 GSE130563 等 §8.3 资源）。
+失败处理：accession 不匹配 GSE\\d+ → 退出 2；HTTP 重试 3 次仍失败或 gzip
+魔数不符 → 非零退出。解释边界：多平台 GSE 的 gz 内含多个 series 块，
+解析责任在下游节点。
+"""
+timeout_secs = 14400
+artifact_prefix = "/artifacts/geo_series_matrix"
+
+[nodes.ports]
+inputs = []
+outputs = [
+  { path = "series_matrix.txt.gz", format = "geo_series_matrix" },
+  { path = "geo_fetch.log", format = "geo_fetch_log" },
+]
+
+[nodes.params]
+accession = { type = "string", doc = "GEO series accession, e.g. GSE130563" }
+
+[nodes.command]
+interpreter = "python3"
+script_file = "scripts/geo_fetch.py"
+
+[nodes.command.env]
+GEO_ACCESSION = "{{ accession }}"
+GEO_MODE = "matrix"
+
+[nodes.resources]
+network = "egress"
+cpus = 1
+memory = "512m"
+pull_policy = "never"
+
+[[nodes]]
+kind = "geo_soft"
+desc = "Download GEO SOFT family file (full sample/series metadata) for a GSE accession"
+doc = """
+按 GSE accession 下载 family.soft.tgz（SOFT 格式全量元数据：样本属性、
+平台注释、submitter 提供的临床字段）。输出：family.soft.tgz + geo_fetch.log。
+用途：供者→样本映射、临床表型字段核验（FILE_VERIFIED 证据的一部分）。
+失败处理同 geo_series_matrix。解释边界：SOFT 里的 submitter 字段未经
+统一编码，字段语义核验在下游完成，本节点不解释内容。
+"""
+timeout_secs = 14400
+artifact_prefix = "/artifacts/geo_soft"
+
+[nodes.ports]
+inputs = []
+outputs = [
+  { path = "family.soft.tgz", format = "geo_soft" },
+  { path = "geo_fetch.log", format = "geo_fetch_log" },
+]
+
+[nodes.params]
+accession = { type = "string", doc = "GEO series accession, e.g. GSE130563" }
+
+[nodes.command]
+interpreter = "python3"
+script_file = "scripts/geo_fetch.py"
+
+[nodes.command.env]
+GEO_ACCESSION = "{{ accession }}"
+GEO_MODE = "soft"
+
+[nodes.resources]
+network = "egress"
+cpus = 1
+memory = "512m"
+pull_policy = "never"
+
+[[nodes]]
+kind = "sra_runinfo"
+desc = "Download SRA RunInfo table (run-level metadata) for a GEO/SRA accession"
+doc = """
+按 accession（GSE/SRP/SRX 均可）从 NCBI Run Selector 的公开端点拉取
+RunInfo TSV：每 run 一行，含 Run、SampleName、LibraryName、spots/bases、
+Platform 等。输出：runinfo.tsv + geo_fetch.log。
+用途：pooled 库供者身份审计（方案 §8.4：pooled 库的细胞数不增加生物学
+重复；run↔sample↔library 映射是核验起点）。
+失败处理：非 200 或空表 → 重试 3 次后非零退出。解释边界：RunInfo 的
+ biosample 映射不含供者临床信息，供者身份仍以 GEO/SOFT 与原文为准。
+"""
+timeout_secs = 3600
+artifact_prefix = "/artifacts/sra_runinfo"
+
+[nodes.ports]
+inputs = []
+outputs = [
+  { path = "runinfo.tsv", format = "sra_runinfo" },
+  { path = "geo_fetch.log", format = "geo_fetch_log" },
+]
+
+[nodes.params]
+accession = { type = "string", doc = "GSE / SRP / SRX / SRR accession" }
+
+[nodes.command]
+interpreter = "python3"
+script_file = "scripts/geo_fetch.py"
+
+[nodes.command.env]
+SRA_ACCESSION = "{{ accession }}"
+GEO_MODE = "runinfo"
+
+[nodes.resources]
+network = "egress"
+cpus = 1
+memory = "512m"
+pull_policy = "never"
