@@ -126,3 +126,47 @@ network = "egress"
 cpus = 1
 memory = "512m"
 pull_policy = "never"
+
+[[nodes]]
+kind = "geo_suppl"
+desc = "Download a named supplementary file from a GEO series (e.g. LINCS/CMap gctx on GSE92742)"
+doc = """
+按 GSE accession + suppl 目录下的确切文件名下载任意补充文件（原样字节，
+不解压）。用途：LINCS/CMap 参考谱（GSE92742_Broad_LINCS_Level5_COMPZ.
+MODZ_n473647x12328.gctx.gz 等）、gene_info/pert_info 映射表——方案 §18.2
+的参考数据入口。
+输出：与上游同名的文件 + geo_fetch.log（URL/sha256 自锚；GSE92742 还有
+官方 SHA512SUMS 可交叉核对）。
+失败处理：accession 不符 GSE\\d+、文件名含 / 或 .. → 退出 2；gzip 魔数
+不符（.gz 后缀时）→ 退出 3。解释边界：gctx 内部行标识符按上游发布口径
+（LINCS 用 Entrez ID，符号映射用同目录 gene_info 在下游完成），本节点
+只负责字节忠实 + 内容锚。
+"""
+timeout_secs = 28800
+artifact_prefix = "/artifacts/geo_suppl"
+
+[nodes.ports]
+inputs = []
+outputs = [
+  { path = "suppl_file", format = "geo_suppl" },
+  { path = "geo_fetch.log", format = "geo_fetch_log" },
+]
+
+[nodes.params]
+accession = { type = "string", doc = "GEO series accession, e.g. GSE92742" }
+suppl_file = { type = "string", doc = "exact filename under the series suppl/ directory" }
+
+[nodes.command]
+interpreter = "python3"
+script_file = "scripts/geo_fetch.py"
+
+[nodes.command.env]
+GEO_ACCESSION = "{{ accession }}"
+GEO_SUPPL_FILE = "{{ suppl_file }}"
+GEO_MODE = "suppl"
+
+[nodes.resources]
+network = "egress"
+cpus = 1
+memory = "1g"
+pull_policy = "never"

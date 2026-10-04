@@ -17,6 +17,7 @@ import requests
 
 MODE = os.environ.get("GEO_MODE", "matrix")
 ACCESSION = os.environ.get("GEO_ACCESSION", os.environ.get("SRA_ACCESSION", ""))
+SUPPL_FILE = os.environ.get("GEO_SUPPL_FILE", "")
 OUT_FILE = os.environ["AUTONOMICS_OUTPUT0"]
 OUT_LOG = os.environ["AUTONOMICS_OUTPUT1"]
 
@@ -50,7 +51,18 @@ def build_url():
     if MODE == "runinfo":
         require("(GSE|SRP|SRX|SRR)\\d+", "GSE/SRP/SRX/SRR accession")
         return f"https://www.ncbi.nlm.nih.gov/Traces/sra-db-be/run_new?acc={ACCESSION}"
-    fail(2, f"GEO_MODE must be matrix|soft|runinfo, got {MODE!r}")
+    if MODE == "suppl":
+        require("GSE\\d+", "GSE series accession (e.g. GSE92742)")
+        # suppl 文件名按上游发布原名传参：只允许单段文件名，杜绝路径拼接注入。
+        if not re.fullmatch(r"[A-Za-z0-9._+-]+", SUPPL_FILE or ""):
+            fail(2, f"GEO_SUPPL_FILE must be a bare filename (no / or ..): {SUPPL_FILE!r}")
+        number = int(ACCESSION[3:])
+        prefix = f"GSE{number // 1000}nnn"
+        return (
+            "https://ftp.ncbi.nlm.nih.gov/geo/series/"
+            f"{prefix}/{ACCESSION}/suppl/{SUPPL_FILE}"
+        )
+    fail(2, f"GEO_MODE must be matrix|soft|runinfo|suppl, got {MODE!r}")
 
 
 def require(pattern, label):
@@ -59,12 +71,18 @@ def require(pattern, label):
 
 
 def check_magic(path):
-    # matrix/soft 产物必须是 gzip；runinfo 是 TSV 文本。
+    # matrix/soft 产物必须是 gzip；suppl 按后缀（.gz → 必须 gzip，
+    # 其余不设硬魔数——gctx/gct/tar 原名直传）；runinfo 是 TSV 文本。
     with open(path, "rb") as handle:
         magic = handle.read(2)
     if MODE in ("matrix", "soft"):
         if magic != b"\x1f\x8b":
             fail(3, f"downloaded bytes are not gzip (magic={magic!r}); refusing to publish")
+    elif MODE == "suppl":
+        if SUPPL_FILE.endswith(".gz") and magic != b"\x1f\x8b":
+            fail(3, f"suppl file {SUPPL_FILE!r} should be gzip (magic={magic!r}); refusing to publish")
+        if magic[:1] == b"<":
+            fail(3, "suppl endpoint returned HTML (likely wrong filename); refusing to publish")
     else:
         if magic == b"\x1f\x8b" or magic[:1] == b"<":
             fail(3, "runinfo endpoint returned gzip/html instead of TSV; refusing to publish")
@@ -95,12 +113,18 @@ size, digest, status = download(url)
 check_magic(OUT_FILE)
 
 with open(OUT_LOG, "w", encoding="utf-8") as log:
-    log.write("\n".join([
+    lines = [
         f"mode\t{MODE}",
         f"accession\t{ACCESSION}",
+    ]
+    if MODE == "suppl":
+        # 输出文件名固定为 suppl_file，原始名只记录在 log 里自锚。
+        lines.append(f"suppl_file\t{SUPPL_FILE}")
+    lines += [
         f"url\t{url}",
         f"http_status\t{status}",
         f"bytes\t{size}",
         f"sha256\t{digest}",
         f"completed\t{time.strftime('%Y-%m-%dT%H:%M:%S%z')}",
-    ]) + "\n")
+    ]
+    log.write("\n".join(lines) + "\n")
