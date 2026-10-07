@@ -74,6 +74,41 @@ TOTAL = """<html><body><pre>
 rows, missing = geo.parse_listing(TOTAL)
 expect(rows == [] and missing == {"a.txt"}, f"整页漂移：rows={rows} missing={missing}")
 
+# --- 引号风格：单引号/无引号 href 都要被行解析覆盖（解析器提取
+#     锚点集合后，引号盲区不再是行解析与锚点对照的共同盲区）---
+SINGLE = """<html><body><pre>
+<a href='cell_info.txt.gz'>cell_info.txt.gz</a>      2024-01-02 03:04   2.5K
+<a href="other.txt.gz">other.txt.gz</a>              2024-01-02 03:04   1.4K
+</pre></body></html>
+"""
+rows, missing = geo.parse_listing(SINGLE)
+expect(
+    missing == set() and len(rows) == 2,
+    f"单引号 href 必须被解析，got rows={rows} missing={missing}",
+)
+
+BARE = """<html><body><pre>
+<a href=cell_info.txt.gz>cell_info.txt.gz</a>        2024-01-02 03:04   2.5K
+</pre></body></html>
+"""
+rows, missing = geo.parse_listing(BARE)
+expect(
+    missing == set() and len(rows) == 1,
+    f"无引号 href 必须被解析，got rows={rows} missing={missing}",
+)
+
+# 行正则不认识的写法（属性顺序变化）→ HTML 解析器仍看到锚点 → 闸门暴露
+REORDERED = """<html><body><pre>
+<a href="cell_info.txt.gz">cell_info.txt.gz</a>      2024-01-02 03:04   2.5K
+<a class="row" href="pert_info.txt">pert_info.txt</a> 2024-01-02 03:04   900
+</pre></body></html>
+"""
+rows, missing = geo.parse_listing(REORDERED)
+expect(
+    missing == {"pert_info.txt"},
+    f"属性重排必须暴露缺失锚点（闸门兜底），got rows={rows} missing={missing}",
+)
+
 # --- 清单列名带 approx 前缀（防止近似大小被当精确字节使用）---
 orig_fetch = geo.fetch_listing
 try:

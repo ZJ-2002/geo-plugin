@@ -20,6 +20,7 @@ import os
 import re
 import sys
 import time
+from html.parser import HTMLParser
 
 import requests
 
@@ -124,15 +125,33 @@ def download(url):
 
 
 # NCBI HTTPS 目录是 `<pre>` 行式列表：每行一个条目，
-# `<a href="名字">名字</a>  日期 时间  大小`；大小是人类标注（1.2T / 99M /
+# `<a href=名字>名字</a>  日期 时间  大小`；大小是人类标注（1.2T / 99M /
 # 26K / 1.4K），目录项为 `-` 且 href 以 / 结尾。
+# href 值容忍双引号/单引号/无引号三种写法（_unquote 剥离）；
+# 锚点对照集合则由标准库 HTML 解析器提取，杜绝引号风格的共同盲区。
 LISTING_ROW = re.compile(
-    r'^<a href="([^"]+)">[^<]*</a>\s+'
+    r'^<a href=("([^"]+)"|\'([^\']+)\'|([^\s>]+))>'
+    r'[^<]*</a>\s+'
     r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2})\s+'
     r'(-|[0-9][0-9.,]*[KMGT]?)\s*$'
 )
 SIZE_MULTIPLIERS = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
-ANCHOR_HREF = re.compile(r'<a\s[^>]*href="([^"]+)"', re.IGNORECASE)
+
+
+class _AnchorCollector(HTMLParser):
+    """收集全部 <a href=…> 的 href 值。标准库解析器天然兼容
+    单引号/双引号/无引号属性与实体编码，正则的引号盲区不复存在。"""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.hrefs = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag != "a":
+            return
+        for name, value in attrs:
+            if name == "href" and value is not None:
+                self.hrefs.append(value)
 
 
 def parse_size(token):
@@ -144,12 +163,21 @@ def parse_size(token):
     return int(token.replace(",", ""))
 
 
+def _unquote(value):
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1]
+    return value
+
+
 def file_anchors(html):
     """页面中所有『裸文件名』锚点（不含目录/父目录/查询串）——
     行解析结果的完整性对照集合：每一个都必须被解析成清单条目。"""
+    collector = _AnchorCollector()
+    collector.feed(html)
+    collector.close()
     return {
         href
-        for href in ANCHOR_HREF.findall(html)
+        for href in collector.hrefs
         if "/" not in href and not href.startswith("?") and href != ".."
     }
 
@@ -164,7 +192,11 @@ def parse_listing(html):
         row = LISTING_ROW.match(line.strip())
         if row is None:
             continue
-        href, modified, size_token = row.groups()
+        href, modified, size_token = (
+            _unquote(row.group(1)),
+            row.group(5),
+            row.group(6),
+        )
         if href.endswith("/") or href in seen:
             continue
         seen.add(href)
