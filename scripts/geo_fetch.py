@@ -5,7 +5,12 @@
 # 失败处理：accession 格式不符 → 退出码 2；网络错误指数退避重试 3 次后退出码 1；
 # 下载字节 gzip/tar 魔数校验失败 → 退出码 3（防半截文件被当有效输出）；
 # list 模式：404（该系列无 suppl 目录）→ 空清单 + log 记录，不算失败；
-# 返回 200 但解析不出任何条目行 → 退出码 3（页面格式漂移，宁可失败不出错清单）。
+# 返回 200 但条目行解析不全（整页或局部格式漂移，页面锚点多于解析结果）
+# → 退出码 3（宁可失败，不出错清单、不漏文件）。
+# 清单大小列 approx_size_bytes 是列表页人类可读标注的换算近似值
+# （如 2.5K → 2560；实测 cell_info.txt.gz 列表 2560 vs 实际下载 2528），
+# 只用于磁盘预算与清单粗核对，禁止直接作为 file_download 的 expected_bytes；
+# 字节终裁以实际下载后的字节数与 sha256 为准。
 # 下载与 sha256 同时流式计算，log 自带内容锚，可直接引用进运行账本（§26.1）。
 # 解释边界：本节点只取原始字节，不解析、不清洗；多平台 gz 内含多个 series 块，
 # SOFT 字段语义、供者↔样本映射的核验责任在下游节点与分析注册表。
@@ -127,6 +132,7 @@ LISTING_ROW = re.compile(
     r'(-|[0-9][0-9.,]*[KMGT]?)\s*$'
 )
 SIZE_MULTIPLIERS = {"K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
+ANCHOR_HREF = re.compile(r'<a\s[^>]*href="([^"]+)"', re.IGNORECASE)
 
 
 def parse_size(token):
@@ -136,6 +142,34 @@ def parse_size(token):
     if multiplier:
         return int(float(token[:-1]) * multiplier)
     return int(token.replace(",", ""))
+
+
+def file_anchors(html):
+    """页面中所有『裸文件名』锚点（不含目录/父目录/查询串）——
+    行解析结果的完整性对照集合：每一个都必须被解析成清单条目。"""
+    return {
+        href
+        for href in ANCHOR_HREF.findall(html)
+        if "/" not in href and not href.startswith("?") and href != ".."
+    }
+
+
+def parse_listing(html):
+    """解析目录页 → (rows, missing)。
+    rows = [(filename, approx_size_bytes, last_modified)]，已去重、未排序；
+    missing = 存在锚点却未被行解析覆盖的文件名（页面格式局部漂移）。"""
+    rows = []
+    seen = set()
+    for line in html.splitlines():
+        row = LISTING_ROW.match(line.strip())
+        if row is None:
+            continue
+        href, modified, size_token = row.groups()
+        if href.endswith("/") or href in seen:
+            continue
+        seen.add(href)
+        rows.append((href, parse_size(size_token), modified))
+    return rows, file_anchors(html) - seen
 
 
 def fetch_listing(url):
@@ -161,31 +195,23 @@ def run_list_mode():
         rows = []
         listing_note = f"{status} (no suppl directory)"
     else:
-        # 页面必有表头/父目录锚以外的真实条目；一条都解析不出视为格式漂移。
-        rows = []
-        seen = set()
-        for line in html.splitlines():
-            row = LISTING_ROW.match(line.strip())
-            if row is None:
-                continue
-            href, modified, size_token = row.groups()
-            if href.endswith("/") or href in seen:
-                continue
-            seen.add(href)
-            rows.append((href, parse_size(size_token), modified))
-        if not rows:
+        rows, missing = parse_listing(html)
+        # 完整性闸门：一条条目都没解析出（整页漂移），或页面锚点比解析
+        # 结果多（局部漂移会静默漏文件），都拒绝输出清单。
+        if not rows or missing:
+            detail = f"; unparsed anchors: {sorted(missing)}" if missing else ""
             fail(
                 3,
-                "suppl listing returned 200 but no entries parsed "
+                f"suppl listing incomplete: parsed {len(rows)} entries{detail} "
                 "(NCBI listing format may have changed); refusing to emit a manifest",
             )
         rows.sort()
         listing_note = str(status)
 
     with open(OUT_FILE, "w", encoding="utf-8") as manifest:
-        manifest.write("filename\tsize_bytes\tlast_modified\n")
-        for href, size_bytes, modified in rows:
-            manifest.write(f"{href}\t{size_bytes}\t{modified}\n")
+        manifest.write("filename\tapprox_size_bytes\tlast_modified\n")
+        for href, approx_size, modified in rows:
+            manifest.write(f"{href}\t{approx_size}\t{modified}\n")
 
     with open(OUT_LOG, "w", encoding="utf-8") as log:
         log.write(
@@ -204,28 +230,32 @@ def run_list_mode():
         )
 
 
-if MODE == "list":
-    run_list_mode()
-    sys.exit(0)
+def main():
+    if MODE == "list":
+        run_list_mode()
+        sys.exit(0)
+
+    url = build_url()
+    size, digest, status = download(url)
+    check_magic(OUT_FILE)
+
+    with open(OUT_LOG, "w", encoding="utf-8") as log:
+        lines = [
+            f"mode\t{MODE}",
+            f"accession\t{ACCESSION}",
+        ]
+        if MODE == "suppl":
+            # 输出文件名固定为 suppl_file，原始名只记录在 log 里自锚。
+            lines.append(f"suppl_file\t{SUPPL_FILE}")
+        lines += [
+            f"url\t{url}",
+            f"http_status\t{status}",
+            f"bytes\t{size}",
+            f"sha256\t{digest}",
+            f"completed\t{time.strftime('%Y-%m-%dT%H:%M:%S%z')}",
+        ]
+        log.write("\n".join(lines) + "\n")
 
 
-url = build_url()
-size, digest, status = download(url)
-check_magic(OUT_FILE)
-
-with open(OUT_LOG, "w", encoding="utf-8") as log:
-    lines = [
-        f"mode\t{MODE}",
-        f"accession\t{ACCESSION}",
-    ]
-    if MODE == "suppl":
-        # 输出文件名固定为 suppl_file，原始名只记录在 log 里自锚。
-        lines.append(f"suppl_file\t{SUPPL_FILE}")
-    lines += [
-        f"url\t{url}",
-        f"http_status\t{status}",
-        f"bytes\t{size}",
-        f"sha256\t{digest}",
-        f"completed\t{time.strftime('%Y-%m-%dT%H:%M:%S%z')}",
-    ]
-    log.write("\n".join(lines) + "\n")
+if __name__ == "__main__":
+    main()

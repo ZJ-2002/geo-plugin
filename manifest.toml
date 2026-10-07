@@ -176,16 +176,19 @@ kind = "geo_suppl_list"
 desc = "List the supplementary-file directory of a GEO series (accession → file manifest)"
 doc = """
 按 GSE accession 抓取 suppl/ 目录的 Apache 列表页，输出确定性文件清单
-suppl_manifest.tsv（filename / size_bytes / last_modified，按文件名排序）
-+ geo_fetch.log（含清单自身的 sha256 内容锚）。
+suppl_manifest.tsv（filename / approx_size_bytes / last_modified，按文件名
+排序）+ geo_fetch.log（含清单自身的 sha256 内容锚）。
 用途：accession → 精确文件名的清单解析——登记表只给 accession 时，
-先跑本节点拿到 suppl 文件名与字节数，再把确切文件名交给 geo_suppl
-下载（与 file_download 节点的 expected_bytes 交叉核对）。
+先跑本节点拿到 suppl 文件名，再把确切文件名交给 geo_suppl 下载。
+完整性闸门：解析条目必须覆盖页面中全部裸文件名锚点；锚点多于解析结果
+（局部格式漂移会静默漏文件）或一条都解析不出（整页漂移）→ 退出 3，
+宁可不输出也不输出不完整清单。
 失败处理：accession 不符 GSE\\d+ → 退出 2；网络重试 3 次失败 → 退出 1；
-404（无 suppl 目录）→ 合法空态：空清单 + log 记 listing_status=404；
-200 但解析不出条目（页面格式漂移）→ 退出 3，宁可不输出也不输出错清单。
-解释边界：大小取自列表页的人类可读标注（如 5.4G），是清单核对用途的
-近似值；字节的终裁以实际下载后的 sha256/字节数为准。
+404（无 suppl 目录）→ 合法空态：空清单 + log 记 listing_status=404。
+解释边界：approx_size_bytes 是列表页人类可读标注的换算近似值（如
+2.5K → 2560；实测 cell_info.txt.gz 列表 2560 vs 实际下载 2528），只用于
+磁盘预算与清单粗核对，禁止直接作为 file_download 的 expected_bytes；
+字节的终裁以实际下载后的字节数与 sha256 为准。
 """
 timeout_secs = 1800
 artifact_prefix = "/artifacts/geo_suppl_list"
