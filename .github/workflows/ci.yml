@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  list-parse:
+    name: GEO list parse gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The completeness gate for GEO series listings (anchor coverage vs
+      # parsed rows, approx_size_bytes semantics, quote-style tolerance) is
+      # stdlib-only Python: no network, no credentials. This is the offline
+      # selftest; the live NCBI probe stays a local/manual step.
+      - name: Run geo list-parse selftest
+        run: PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_geo_list_parse.py
