@@ -22,8 +22,10 @@ import sys
 import time
 from html.parser import HTMLParser
 
-import requests
-
+# `requests` is imported lazily inside download()/fetch_listing(): the
+# offline selftest (test_geo_list_parse.py) loads this module via importlib
+# and must stay runnable with stdlib only (python3 -S, CI runners without
+# pip packages). The listing parser below deliberately never needs it.
 MODE = os.environ.get("GEO_MODE", "matrix")
 ACCESSION = os.environ.get("GEO_ACCESSION", os.environ.get("SRA_ACCESSION", ""))
 SUPPL_FILE = os.environ.get("GEO_SUPPL_FILE", "")
@@ -105,6 +107,8 @@ def check_magic(path):
 
 
 def download(url):
+    import requests  # lazy: keep module importable stdlib-only (see top note)
+
     last_error = None
     for attempt in range(1, RETRIES + 1):
         try:
@@ -206,6 +210,8 @@ def parse_listing(html):
 
 def fetch_listing(url):
     """拉目录 HTML。404 → (None, 404)：该系列无 suppl 目录，合法空态。"""
+    import requests  # lazy: keep module importable stdlib-only (see top note)
+
     last_error = None
     for attempt in range(1, RETRIES + 1):
         try:
