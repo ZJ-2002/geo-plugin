@@ -170,3 +170,46 @@ network = "egress"
 cpus = 1
 memory = "1g"
 pull_policy = "never"
+
+[[nodes]]
+kind = "geo_suppl_list"
+desc = "List the supplementary-file directory of a GEO series (accession → file manifest)"
+doc = """
+按 GSE accession 抓取 suppl/ 目录的 Apache 列表页，输出确定性文件清单
+suppl_manifest.tsv（filename / size_bytes / last_modified，按文件名排序）
++ geo_fetch.log（含清单自身的 sha256 内容锚）。
+用途：accession → 精确文件名的清单解析——登记表只给 accession 时，
+先跑本节点拿到 suppl 文件名与字节数，再把确切文件名交给 geo_suppl
+下载（与 file_download 节点的 expected_bytes 交叉核对）。
+失败处理：accession 不符 GSE\\d+ → 退出 2；网络重试 3 次失败 → 退出 1；
+404（无 suppl 目录）→ 合法空态：空清单 + log 记 listing_status=404；
+200 但解析不出条目（页面格式漂移）→ 退出 3，宁可不输出也不输出错清单。
+解释边界：大小取自列表页的人类可读标注（如 5.4G），是清单核对用途的
+近似值；字节的终裁以实际下载后的 sha256/字节数为准。
+"""
+timeout_secs = 1800
+artifact_prefix = "/artifacts/geo_suppl_list"
+
+[nodes.ports]
+inputs = []
+outputs = [
+  { path = "suppl_manifest.tsv", format = "geo_suppl_manifest" },
+  { path = "geo_fetch.log", format = "geo_fetch_log" },
+]
+
+[nodes.params]
+accession = { type = "string", doc = "GEO series accession, e.g. GSE92742" }
+
+[nodes.command]
+interpreter = "python3"
+script_file = "scripts/geo_fetch.py"
+
+[nodes.command.env]
+GEO_ACCESSION = "{{ accession }}"
+GEO_MODE = "list"
+
+[nodes.resources]
+network = "egress"
+cpus = 1
+memory = "512m"
+pull_policy = "never"
